@@ -4,7 +4,6 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import aiohttp
-import numpy as np
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -15,10 +14,6 @@ intents.message_content = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
-
-# Função para criar áudio silencioso
-def create_silence():
-    return discord.AudioSource()
 
 class SilentSource(discord.PCMVolumeTransformer):
     def __init__(self):
