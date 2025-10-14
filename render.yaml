@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: discord-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    autoDeploy: false
+    envVars:
+      - key: TOKEN
+        sync: false
+      - key: VOICE_CHANNEL_ID
+        sync: false
