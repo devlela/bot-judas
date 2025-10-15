@@ -3,6 +3,13 @@ from discord.ext import commands, tasks
 import os
 from dotenv import load_dotenv
 import asyncio
+from aiohttp import web
+import logging
+import time
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -11,17 +18,31 @@ load_dotenv()
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
+intents.guilds = True
 
 # Criação do bot
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+# Variáveis globais para monitoramento
+last_voice_time = time.time()
+is_reconnecting = False
+
+# Criar a aplicação web
+app = web.Application()
+runner = None  # Será definido mais tarde
+
 class SilentSource(discord.PCMVolumeTransformer):
     def __init__(self):
+        super().__init__(discord.FFmpegPCMAudio(
+            f'-f lavfi -i anullsrc=r=48000:cl=mono -t 3600'.split(),
+            pipe=True
+        ))
         # Cria um buffer de áudio silencioso
         self._buffer = b'\x00' * 3840  # 20ms de silêncio em 48kHz
 
     def read(self):
-        # Retorna 20ms de silêncio
+        global last_voice_time
+        last_voice_time = time.time()
         return self._buffer
 
 @tasks.loop(seconds=1)
@@ -29,11 +50,77 @@ async def play_silence(voice_client):
     """Reproduz silêncio continuamente para manter o bot ativo"""
     if voice_client and voice_client.is_connected():
         if not voice_client.is_playing():
-            voice_client.play(SilentSource(), after=lambda e: print(f'Erro ao reproduzir silêncio: {e}' if e else None))
+            try:
+                voice_client.play(SilentSource(), after=lambda e: logger.error(f'Erro ao reproduzir silêncio: {e}') if e else None)
+                logger.info("Iniciando reprodução de silêncio")
+            except Exception as e:
+                logger.error(f"Erro ao iniciar reprodução de silêncio: {e}")
+
+@tasks.loop(seconds=30)
+async def check_voice_connection():
+    """Verifica e mantém a conexão de voz"""
+    global is_reconnecting
+    if is_reconnecting:
+        return
+
+    try:
+        if not any(vc.is_connected() for vc in bot.voice_clients):
+            is_reconnecting = True
+            logger.info("Detectada desconexão do canal de voz. Tentando reconectar...")
+            
+            channel_id = int(os.getenv('VOICE_CHANNEL_ID'))
+            channel = bot.get_channel(channel_id)
+            
+            if channel:
+                try:
+                    voice_client = await channel.connect()
+                    if not play_silence.is_running():
+                        play_silence.start(voice_client)
+                    logger.info(f"Reconectado ao canal de voz: {channel.name}")
+                except Exception as e:
+                    logger.error(f"Erro ao reconectar: {e}")
+            else:
+                logger.error("Canal de voz não encontrado")
+    except Exception as e:
+        logger.error(f"Erro ao verificar conexão de voz: {e}")
+    finally:
+        is_reconnecting = False
+
+@tasks.loop(seconds=60)
+async def keep_alive():
+    """Mantém o serviço ativo fazendo auto-ping"""
+    try:
+        async with bot.session.get(f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}") as response:
+            logger.info(f"Auto-ping status: {response.status}")
+    except Exception as e:
+        logger.error(f"Erro no auto-ping: {e}")
+
+@tasks.loop(minutes=5)
+async def connection_watchdog():
+    """Monitor de conexão que verifica se o áudio está sendo reproduzido"""
+    global last_voice_time
+    
+    if time.time() - last_voice_time > 300:  # 5 minutos sem atividade de áudio
+        logger.warning("Detectada inatividade prolongada de áudio. Reiniciando conexão...")
+        for vc in bot.voice_clients:
+            try:
+                await vc.disconnect()
+            except:
+                pass
+        
+        # A reconexão será tratada pelo check_voice_connection
 
 @bot.event
 async def on_ready():
-    print(f'{bot.user} está online!')
+    logger.info(f'{bot.user} está online!')
+    
+    # Inicia os loops de monitoramento
+    if not check_voice_connection.is_running():
+        check_voice_connection.start()
+    if not keep_alive.is_running():
+        keep_alive.start()
+    if not connection_watchdog.is_running():
+        connection_watchdog.start()
     
     # Conecta ao canal de voz automaticamente
     channel_id = int(os.getenv('VOICE_CHANNEL_ID'))
@@ -44,15 +131,15 @@ async def on_ready():
             for vc in bot.voice_clients:
                 await vc.disconnect()
             
-            # Conecta pelo canal desejado
+            # Conecta ao canal desejado
             voice_client = await channel.connect()
-            print(f'Conectado ao canal de voz: {channel.name}')
+            logger.info(f'Conectado ao canal de voz: {channel.name}')
             
             # Inicia o loop de reprodução de silêncio
             if not play_silence.is_running():
                 play_silence.start(voice_client)
         except Exception as e:
-            print(f'Erro ao conectar ao canal de voz: {e}')
+            logger.error(f'Erro ao conectar ao canal de voz: {e}')
 
 @bot.command()
 async def join(ctx):
@@ -82,5 +169,59 @@ async def leave(ctx):
     else:
         await ctx.send('Não estou em nenhum canal de voz!')
 
-# Inicia o bot com o token
-bot.run(os.getenv('TOKEN'))
+# Rotas do servidor web
+async def health_check(request):
+    # Verificar se o bot está conectado ao Discord e ao canal de voz
+    is_discord_connected = bot.is_ready()
+    is_voice_connected = any(vc.is_connected() for vc in bot.voice_clients)
+    
+    status = {
+        "status": "healthy" if is_discord_connected and is_voice_connected else "degraded",
+        "discord_connected": is_discord_connected,
+        "voice_connected": is_voice_connected,
+        "last_voice_activity": time.time() - last_voice_time,
+        "uptime": time.time() - bot.start_time if hasattr(bot, 'start_time') else 0
+    }
+    
+    # Se estiver degradado, tentar reconectar
+    if not is_voice_connected and not is_reconnecting:
+        asyncio.create_task(check_voice_connection())
+    
+    return web.json_response(status)
+
+app.router.add_get("/", health_check)
+app.router.add_get("/health", health_check)  # Endpoint adicional para monitoramento
+
+async def start():
+    global runner
+    
+    # Iniciar o servidor web
+    port = int(os.environ.get("PORT", 10000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    
+    try:
+        await site.start()
+        logger.info(f"Servidor web iniciado na porta {port}")
+        
+        # Registrar tempo de início
+        bot.start_time = time.time()
+        
+        # Conectar o bot
+        await bot.start(os.getenv('TOKEN'))
+    except Exception as e:
+        logger.error(f"Erro ao iniciar: {e}")
+        if runner:
+            await runner.cleanup()
+        raise
+
+# Executar o bot e o servidor web
+if __name__ == "__main__":
+    try:
+        asyncio.run(start())
+    except KeyboardInterrupt:
+        logger.info("Desligando o bot...")
+    except Exception as e:
+        logger.error(f"Erro fatal: {e}")
+        raise
