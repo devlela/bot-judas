@@ -11,3 +11,5 @@ services:
         sync: false
       - key: VOICE_CHANNEL_ID
         sync: false
+      - key: PORT
+        value: 10000

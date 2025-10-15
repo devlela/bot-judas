@@ -88,15 +88,17 @@ async def leave(ctx):
 async def handle(request):
     return web.Response(text="Bot is running!")
 
-app = web.Application()
-app.router.add_get("/", handle)
-
-# Função para executar o servidor web
 def run_web_server():
-    web.run_app(app, port=int(os.environ.get("PORT", 10000)))
+    app = web.Application()
+    app.router.add_get("/", handle)
+    port = int(os.environ.get("PORT", 10000))
+    print(f"Starting web server on port {port}")
+    web.run_app(app, port=port, print=None)  # Disable default startup message
 
 # Inicia o servidor web em uma thread separada
-threading.Thread(target=run_web_server, daemon=True).start()
+web_thread = threading.Thread(target=run_web_server, daemon=True)
+web_thread.start()
+print("Web server thread started")
 
 # Inicia o bot com o token
 bot.run(os.getenv('TOKEN'))
