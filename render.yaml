@@ -1,10 +1,9 @@
 services:
-  - type: web
+  - type: worker
     name: discord-bot
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    env: docker
     plan: free
+    dockerCommand: python bot.py
     autoDeploy: false
     envVars:
       - key: TOKEN

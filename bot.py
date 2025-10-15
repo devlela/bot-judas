@@ -44,7 +44,7 @@ async def on_ready():
             for vc in bot.voice_clients:
                 await vc.disconnect()
             
-            # Conecta ao canal desejado
+            # ]Conecta pelo canal desejado
             voice_client = await channel.connect()
             print(f'Conectado ao canal de voz: {channel.name}')
             
