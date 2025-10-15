@@ -4,6 +4,8 @@ import os
 from dotenv import load_dotenv
 import asyncio
 import aiohttp
+from aiohttp import web
+import threading
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -44,7 +46,7 @@ async def on_ready():
             for vc in bot.voice_clients:
                 await vc.disconnect()
             
-            # ]Conecta pelo canal desejado
+            # Conecta pelo canal desejado
             voice_client = await channel.connect()
             print(f'Conectado ao canal de voz: {channel.name}')
             
@@ -81,6 +83,20 @@ async def leave(ctx):
         await ctx.send('Desconectado do canal de voz!')
     else:
         await ctx.send('Não estou em nenhum canal de voz!')
+
+# Configuração do servidor web
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+app = web.Application()
+app.router.add_get("/", handle)
+
+# Função para executar o servidor web
+def run_web_server():
+    web.run_app(app, port=int(os.environ.get("PORT", 10000)))
+
+# Inicia o servidor web em uma thread separada
+threading.Thread(target=run_web_server, daemon=True).start()
 
 # Inicia o bot com o token
 bot.run(os.getenv('TOKEN'))
