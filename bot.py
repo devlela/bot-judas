@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import asyncio
 import aiohttp
 from aiohttp import web
-import threading
+import sys
 
 # Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -15,7 +15,13 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 
+# Criação do bot e do servidor web
 bot = commands.Bot(command_prefix='!', intents=intents)
+app = web.Application()
+
+# Configuração do servidor web
+async def health_check(request):
+    return web.Response(text="Bot is running!")
 
 class SilentSource(discord.PCMVolumeTransformer):
     def __init__(self):
@@ -84,21 +90,29 @@ async def leave(ctx):
     else:
         await ctx.send('Não estou em nenhum canal de voz!')
 
-# Configuração do servidor web
-async def handle(request):
-    return web.Response(text="Bot is running!")
-
-def run_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle)
+async def start_bot():
+    # Configuração das rotas do servidor web
+    app.router.add_get("/", health_check)
+    
+    # Inicia o servidor web
     port = int(os.environ.get("PORT", 10000))
-    print(f"Starting web server on port {port}")
-    web.run_app(app, port=port, print=None)  # Disable default startup message
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Web server started on port {port}")
+    
+    try:
+        # Inicia o bot
+        await bot.start(os.getenv('TOKEN'))
+    finally:
+        if not bot.is_closed():
+            await bot.close()
+        await runner.cleanup()
 
-# Inicia o servidor web em uma thread separada
-web_thread = threading.Thread(target=run_web_server, daemon=True)
-web_thread.start()
-print("Web server thread started")
-
-# Inicia o bot com o token
-bot.run(os.getenv('TOKEN'))
+# Executa o bot e o servidor web
+if __name__ == '__main__':
+    try:
+        asyncio.run(start_bot())
+    except KeyboardInterrupt:
+        print("Shutting down...")
