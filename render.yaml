@@ -1,5 +1,5 @@
 services:
-  - type: web
+  - type: worker
     name: discord-bot
     env: python
     buildCommand: pip install -r requirements.txt
@@ -11,5 +11,3 @@ services:
         sync: false
       - key: VOICE_CHANNEL_ID
         sync: false
-      - key: PORT
-        value: 10000
